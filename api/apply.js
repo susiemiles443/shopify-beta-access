@@ -1,70 +1,59 @@
 import {
   getEnv,
   json,
+  normalizeEmail,
   parseRequestBody,
-  shopifyAdminFetch,
-  verifyProxySignature
+  shopifyAdminFetch
 } from '../lib/shopify.js';
 
-function parseQueryFromReq(req, appUrl) {
-  const url = new URL(req.url, appUrl);
-  const query = {};
-  for (const [key, value] of url.searchParams.entries()) {
-    if (query[key]) {
-      if (Array.isArray(query[key])) {
-        query[key].push(value);
-      } else {
-        query[key] = [query[key], value];
-      }
-    } else {
-      query[key] = value;
+function withCors(req, res, dataStatus, data) {
+  const origin = req.headers.origin || '*';
+  return json(
+    res,
+    dataStatus,
+    data,
+    {
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
     }
-  }
-  return query;
-}
-
-function normalizeEmail(value) {
-  return String(value || '').trim().toLowerCase();
+  );
 }
 
 export default async function handler(req, res) {
   try {
-    const appUrl = getEnv('SHOPIFY_APP_URL');
-    const shop = getEnv('SHOPIFY_SHOP_DOMAIN');
-    const token = getEnv('SHOPIFY_OFFLINE_ACCESS_TOKEN');
-    const apiSecret = getEnv('SHOPIFY_API_SECRET') || getEnv('SHOPIFY_CLIENT_SECRET');
-    const customerTag = getEnv('BETA_CUSTOMER_TAG', 'beta-approved');
-
     if (req.method === 'OPTIONS') {
       res.statusCode = 204;
+      res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       res.end();
       return;
     }
 
     if (req.method === 'GET') {
-      return json(res, 200, {
+      return withCors(req, res, 200, {
         success: true,
-        message: 'Apply endpoint is alive',
-        note: 'Use POST via Shopify App Proxy'
+        message: 'apply-direct endpoint is alive'
       });
     }
 
     if (req.method !== 'POST') {
-      return json(res, 405, { success: false, message: 'Method not allowed' });
-    }
-
-    if (!appUrl || !shop || !token || !apiSecret) {
-      return json(res, 500, {
+      return withCors(req, res, 405, {
         success: false,
-        message: 'Missing SHOPIFY_APP_URL, SHOPIFY_SHOP_DOMAIN, SHOPIFY_OFFLINE_ACCESS_TOKEN, or SHOPIFY_API_SECRET'
+        message: 'Method not allowed'
       });
     }
 
-    const query = parseQueryFromReq(req, appUrl);
+    const shop = getEnv('SHOPIFY_SHOP_DOMAIN');
+    const token = getEnv('SHOPIFY_OFFLINE_ACCESS_TOKEN');
+    const customerTag = getEnv('BETA_CUSTOMER_TAG', 'beta-approved');
 
-    if (!verifyProxySignature(query, apiSecret)) {
-      console.error('apply invalid proxy signature', query);
-      return json(res, 401, { success: false, message: 'Invalid proxy signature' });
+    if (!shop || !token) {
+      return withCors(req, res, 500, {
+        success: false,
+        message: 'Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_OFFLINE_ACCESS_TOKEN'
+      });
     }
 
     const body = await parseRequestBody(req);
@@ -73,7 +62,7 @@ export default async function handler(req, res) {
     const agreed = !!body.agreed;
 
     if (!customerId || !email || !agreed) {
-      return json(res, 400, {
+      return withCors(req, res, 400, {
         success: false,
         message: 'Missing customer_id, email, or agreement'
       });
@@ -101,13 +90,16 @@ export default async function handler(req, res) {
     const customer = customerData?.data?.customer;
 
     if (!customer) {
-      return json(res, 404, { success: false, message: 'Customer not found' });
+      return withCors(req, res, 404, {
+        success: false,
+        message: 'Customer not found'
+      });
     }
 
     const shopifyEmail = normalizeEmail(customer.email);
 
     if (shopifyEmail !== email) {
-      return json(res, 403, {
+      return withCors(req, res, 403, {
         success: false,
         message: 'Customer email mismatch'
       });
@@ -150,20 +142,20 @@ export default async function handler(req, res) {
     const userErrors = payload?.userErrors || [];
 
     if (userErrors.length > 0) {
-      return json(res, 400, {
+      return withCors(req, res, 400, {
         success: false,
         message: userErrors.map((e) => e.message).join('; ')
       });
     }
 
-    return json(res, 200, {
+    return withCors(req, res, 200, {
       success: true,
       message: 'Application submitted successfully',
       customer: payload?.customer || null
     });
   } catch (error) {
-    console.error('apply error', error);
-    return json(res, 500, {
+    console.error('apply-direct error', error);
+    return withCors(req, res, 500, {
       success: false,
       message: error.message || 'Internal server error'
     });
