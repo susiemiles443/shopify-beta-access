@@ -61,48 +61,85 @@ export default async function handler(req, res) {
     const email = normalizeEmail(body.email);
     const agreed = !!body.agreed;
 
-    if (!customerId || !email || !agreed) {
+    if (!email || !agreed) {
       return withCors(req, res, 400, {
         success: false,
-        message: 'Missing customer_id, email, or agreement'
+        message: 'Missing email or agreement'
       });
     }
 
-    const gid = `gid://shopify/Customer/${customerId}`;
+    let customer;
 
-    const customerQuery = `
-      query GetCustomer($id: ID!) {
-        customer(id: $id) {
-          id
-          email
-          tags
+    if (customerId) {
+      // Find customer by ID
+      const gid = `gid://shopify/Customer/${customerId}`;
+      const customerQuery = `
+        query GetCustomer($id: ID!) {
+          customer(id: $id) {
+            id
+            email
+            tags
+          }
         }
+      `;
+
+      const customerData = await shopifyAdminFetch({
+        shop,
+        token,
+        query: customerQuery,
+        variables: { id: gid }
+      });
+
+      customer = customerData?.data?.customer;
+
+      if (!customer) {
+        return withCors(req, res, 404, {
+          success: false,
+          message: 'Customer not found'
+        });
       }
-    `;
 
-    const customerData = await shopifyAdminFetch({
-      shop,
-      token,
-      query: customerQuery,
-      variables: { id: gid }
-    });
+      const shopifyEmail = normalizeEmail(customer.email);
 
-    const customer = customerData?.data?.customer;
+      if (shopifyEmail !== email) {
+        return withCors(req, res, 403, {
+          success: false,
+          message: 'Customer email mismatch'
+        });
+      }
+    } else {
+      // Find customer by email
+      const searchQuery = `email:${email}`;
+      const searchQueryGraphql = `
+        query SearchCustomers($query: String!) {
+          customers(first: 1, query: $query) {
+            edges {
+              node {
+                id
+                email
+                tags
+              }
+            }
+          }
+        }
+      `;
 
-    if (!customer) {
-      return withCors(req, res, 404, {
-        success: false,
-        message: 'Customer not found'
+      const searchData = await shopifyAdminFetch({
+        shop,
+        token,
+        query: searchQueryGraphql,
+        variables: { query: searchQuery }
       });
-    }
 
-    const shopifyEmail = normalizeEmail(customer.email);
+      const edges = searchData?.data?.customers?.edges;
+      if (!edges || edges.length === 0) {
+        return withCors(req, res, 404, {
+          success: false,
+          message: 'No customer found with this email'
+        });
+      }
 
-    if (shopifyEmail !== email) {
-      return withCors(req, res, 403, {
-        success: false,
-        message: 'Customer email mismatch'
-      });
+      customer = edges[0].node;
     }
 
     const currentTags = Array.isArray(customer.tags) ? customer.tags : [];
@@ -132,7 +169,7 @@ export default async function handler(req, res) {
       query: mutation,
       variables: {
         input: {
-          id: gid,
+          id: customer.id,
           tags: nextTags
         }
       }
